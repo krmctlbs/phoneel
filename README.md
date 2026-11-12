@@ -15,27 +15,27 @@
 ```mermaid
 flowchart LR
     subgraph Android["Android Client (Kotlin)"]
-        IMU["TYPE_GAME_ROTATION_VECTOR\n(120–200 Hz)"]
-        TX["Latest-State Conflation\n(AtomicReference)"]
-        FIFO["Button FIFO Queue\n(ConcurrentLinkedQueue)"]
-        DDU["60 FPS Canvas DDU +\nVibrator Haptics"]
+        IMU["Game Rotation Sensor (120-200 Hz)"]
+        TX["Latest-State Conflation (AtomicReference)"]
+        FIFO["Button FIFO Queue (ConcurrentLinkedQueue)"]
+        DDU["60 FPS Canvas DDU + Vibrator Haptics"]
     end
 
     subgraph PC["Windows Host (Python)"]
-        NET["Dual Transport Server\n(UDP :9999 / TCP :9999)"]
-        DSP["Adaptive Steering Filter\n(Deadzone + Expo + EMA)"]
-        VIG["ViGEmBus Virtual\nXbox 360 Controller"]
-        SHM["Assetto Corsa Shared Memory\n(mmap @ 60 Hz)"]
-        ADB["ADB Watchdog\n(adb reverse tcp:9999)"]
+        NET["Dual Transport Server (UDP / TCP :9999)"]
+        DSP["Adaptive Steering Filter (Deadzone + Expo + EMA)"]
+        VIG["ViGEmBus Virtual Xbox 360 Controller"]
+        SHM["Assetto Corsa Shared Memory (mmap @ 60 Hz)"]
+        ADB["ADB Watchdog (adb reverse tcp:9999)"]
     end
 
     IMU --> TX
-    TX -->|"0x01 Sensor (17 B)"| NET
-    FIFO -->|"0x02/0x03 Button (3 B)"| NET
+    TX -->|0x01 Sensor 17B| NET
+    FIFO -->|0x02/0x03 Button 3B| NET
     NET --> DSP --> VIG
-    SHM -->|"0x0A Telemetry + FFB (23 B)"| NET
-    NET -->|"60 Hz"| DDU
-    ADB -.->|"USB Tunnel"| Android
+    SHM -->|0x0A Telemetry + FFB 23B| NET
+    NET -->|60 Hz| DDU
+    ADB -.->|USB Tunnel| Android
 ```
 
 ### Transport Layer & Conflation
@@ -54,16 +54,16 @@ flowchart LR
 
 ### 1. Coordinate Remapping & Roll Extraction (`SensorReader.kt`)
 
-Phoneel uses Android's hardware-fused `TYPE_GAME_ROTATION_VECTOR` (accelerometer + gyroscope fusion without magnetometer yaw drift). Given the unit quaternion $\mathbf{q} = (q_x, q_y, q_z, q_w)$ from the sensor hub:
+Phoneel uses Android's hardware-fused `TYPE_GAME_ROTATION_VECTOR` (accelerometer + gyroscope fusion without magnetometer yaw drift). Given the unit quaternion $\mathbf{q} = (x, y, z, w)$ from the sensor hub:
 
-1. Convert $\mathbf{q}$ to a $3 \times 3$ device rotation matrix $\mathbf{R}_{\text{dev}}$ via `SensorManager.getRotationMatrixFromVector`.
+1. Convert $\mathbf{q}$ to a $3 \times 3$ device rotation matrix $\mathbf{R}$ via `SensorManager.getRotationMatrixFromVector`.
 2. Remap the coordinate frame for landscape orientation (device rotated $90^\circ$ counter-clockwise, where screen $X = \text{device } Y$ and screen $Y = -\text{device } X$):
 
-$$\mathbf{R}_{\text{land}} = \operatorname{remapCoordinateSystem}\big(\mathbf{R}_{\text{dev}},\, \text{AXIS-Y},\, \text{AXIS-MINUS-X}\big)$$
+$$\mathbf{R}' = \mathrm{remapCoordinateSystem}\left(\mathbf{R}, \mathrm{AXIS\text{-}Y}, \mathrm{AXIS\text{-}MINUS\text{-}X}\right)$$
 
-3. Extract Euler angles $(\psi, \theta, \phi)$ from $\mathbf{R}_{\text{land}}$ and normalize the roll angle $\phi$ relative to the calibrated center offset $\phi_0$ and configured lock angle $\phi_{\max} \in [40^\circ, 100^\circ]$:
+3. Extract Euler angles $(\psi, \theta, \phi)$ from $\mathbf{R}'$ and normalize the roll angle $\phi$ relative to the calibrated center offset $\phi_0$ and configured lock angle $\Phi \in [40^\circ, 100^\circ]$:
 
-$$u_{\text{raw}} = \operatorname{clip}\left(\frac{\phi - \phi_0}{\phi_{\max}},\, -1.0,\, 1.0\right)$$
+$$u = \mathrm{clip}\left(\frac{\phi - \phi_0}{\Phi}, -1.0, 1.0\right)$$
 
 ---
 
@@ -74,35 +74,35 @@ Each incoming steering sample $x \in [-1, 1]$ passes through a 4-stage pipeline 
 #### Stage A: Center Deadzone Normalization
 Suppresses resting hand tremor within $|x| < d_z$ (default $d_z = 0.005$) and rescales the remaining domain continuously from $0$:
 
-$$x_1 = \begin{cases} 0 & \text{if } |x| < d_z \\ \operatorname{sgn}(x)\frac{|x| - d_z}{1 - d_z} & \text{otherwise} \end{cases}$$
+$$x_1 = \begin{cases} 0 & \text{if } |x| < d_z \\ \mathrm{sgn}(x)\frac{|x| - d_z}{1 - d_z} & \text{otherwise} \end{cases}$$
 
 #### Stage B: Non-Linear Exponential Response Curve
 Applies an exponential curve $\gamma \in [1.0, 2.2]$ (default $\gamma = 1.35$) to increase angular resolution near the center while preserving $100\%$ steering lock at $|x_1| = 1$:
 
-$$x_2 = \operatorname{sgn}(x_1)|x_1|^{\gamma}$$
+$$x_2 = \mathrm{sgn}(x_1)|x_1|^{\gamma}$$
 
 #### Stage C: Optional XInput Anti-Deadzone
-For titles with an unconfigurable internal gamepad deadzone $d_{\text{anti}}$:
+For titles with an unconfigurable internal gamepad deadzone $d_a$:
 
-$$x_3 = \operatorname{sgn}(x_2)\big(d_{\text{anti}} + (1 - d_{\text{anti}})|x_2|\big)$$
+$$x_3 = \mathrm{sgn}(x_2)\left(d_a + (1 - d_a)|x_2|\right)$$
 
 #### Stage D: Speed-Sensitive & Counter-Steer Adaptive EMA Filter
-A standard fixed-alpha Exponential Moving Average (EMA) either leaves high-speed straight-line jitter unfiltered or introduces phase lag during rapid counter-steering (catching oversteer). Phoneel computes a dynamic smoothing factor $\alpha_{\text{eff}} \in [0.22, 0.96]$ per packet based on vehicle speed $v$ ($\text{km/h}$) and instantaneous steering delta $\Delta = |x_3 - y_{t-1}|$:
+A standard fixed-alpha Exponential Moving Average (EMA) either leaves high-speed straight-line jitter unfiltered or introduces phase lag during rapid counter-steering (catching oversteer). Phoneel computes a dynamic smoothing factor $\alpha \in [0.22, 0.96]$ per packet based on vehicle speed $v$ ($\text{km/h}$) and instantaneous steering delta $\Delta = |x_3 - y_{t-1}|$:
 
-$$\alpha_{\text{eff}} = \begin{cases} \min\big(0.96,\; \alpha_0 + 1.8(\Delta - 0.10)\big) & \text{if } \Delta > 0.10 \quad \text{(rapid counter-steer)} \\ \max\big(0.22,\; \alpha_0 (1 - 0.45\,k_{\text{spd}}\,w_{\text{ctr}}\,d_{\text{spd}})\big) & \text{if } \Delta \le 0.10 \quad \text{(steady-state)} \end{cases}$$
+$$\alpha = \begin{cases} \min\left(0.96, \alpha_0 + 1.8(\Delta - 0.10)\right) & \text{if } \Delta > 0.10 \quad \text{(rapid counter-steer)} \\ \max\left(0.22, \alpha_0 (1 - 0.45 k_v w_c d_s)\right) & \text{if } \Delta \le 0.10 \quad \text{(steady-state)} \end{cases}$$
 
 where:
-- $k_{\text{spd}} = \operatorname{clip}\left(\frac{v - 60}{180},\, 0,\, 1\right)$ scales damping between $60\text{ km/h}$ and $240\text{ km/h}$,
-- $w_{\text{ctr}} = \max(0,\, 1 - 1.6|x_3|)$ restricts damping to the center region,
-- $y_t = \alpha_{\text{eff}}\,x_3 + (1 - \alpha_{\text{eff}})\,y_{t-1}$ is the filtered output.
+- $k_v = \mathrm{clip}\left(\frac{v - 60}{180}, 0, 1\right)$ scales damping between $60\text{ km/h}$ and $240\text{ km/h}$,
+- $w_c = \max(0, 1 - 1.6|x_3|)$ restricts damping to the center region,
+- $y_t = \alpha x_3 + (1 - \alpha)y_{t-1}$ is the filtered output.
 
 ---
 
 ### 3. Progressive Throttle Modulation (`CockpitViews.kt`)
 
-Touch vertical displacement $h \in [0, 1]$ on the throttle pedal is mapped through a power curve ($\gamma_{\text{gas}} = 1.45$) so the lower $0\text{–}70\%$ of physical finger travel provides finer torque modulation on corner exit:
+Touch vertical displacement $h \in [0, 1]$ on the throttle pedal is mapped through a power curve ($\gamma_g = 1.45$) so the lower $0\text{–}70\%$ of physical finger travel provides finer torque modulation on corner exit:
 
-$$u_{\text{gas}} = \operatorname{clip}\left(\frac{h - 0.06}{0.88},\, 0,\, 1\right)^{1.45}$$
+$$u_g = \mathrm{clip}\left(\frac{h - 0.06}{0.88}, 0, 1\right)^{1.45}$$
 
 ---
 
@@ -115,14 +115,14 @@ When `SPageFileGraphics.status == 2` (`AC_LIVE`), two 8-bit haptic channels ($[0
 1. **Tire Slip / Oversteer Channel (`ffb_slip`):**
    Weights rear-axle slip (`wheelSlip[2, 3]`) higher than front-axle slip (`wheelSlip[0, 1]`) so rear traction loss is felt immediately:
 
-$$s_{\text{comb}} = \max\Big(1.15 \max(|s_{\text{RL}}|, |s_{\text{RR}}|),\; 0.65 \max(|s_{\text{FL}}|, |s_{\text{FR}}|)\Big)$$
+$$S = \max\left(1.15 \max(|s_2|, |s_3|), 0.65 \max(|s_0|, |s_1|)\right)$$
 
-$$I_{\text{slip}} = \operatorname{clip}\left(\left\lfloor 255 \cdot \frac{s_{\text{comb}} - 0.85}{2.20} \right\rfloor,\, 0,\, 255\right)$$
+$$I_{\mathrm{slip}} = \mathrm{clip}\left(\left\lfloor 255 \cdot \frac{S - 0.85}{2.20} \right\rfloor, 0, 255\right)$$
 
 2. **Kerb & Shift Channel (`ffb_kerb`):**
-   Combines frame-to-frame suspension travel derivative $\Delta z_i = |z_{i,t} - z_{i,t-1}|$ across all four corners with vertical G-force peaks $|G_y|$ and gear-change impulses:
+   Combines frame-to-frame suspension travel derivative $\Delta z_i$ across all four corners with vertical G-force peaks $|G_y|$ and gear-change impulses:
 
-$$I_{\text{kerb}} = \operatorname{clip}\left(\left\lfloor 255 \cdot \big(140 \max_i \Delta z_i + 0.45 \max(0, |G_y| - 1.35)\big) \right\rfloor,\, 0,\, 255\right)$$
+$$I_{\mathrm{kerb}} = \mathrm{clip}\left(\left\lfloor 255 \cdot \left(140 \max_i \Delta z_i + 0.45 \max(0, |G_y| - 1.35)\right) \right\rfloor, 0, 255\right)$$
 
 ---
 
@@ -193,4 +193,3 @@ phoneel/
 
 - **Current Release:** `v0.1-beta`
 - **Development:** Engineered iteratively using AI-assisted workflows alongside live closed-loop telemetry and latency profiling in Assetto Corsa.
-- **License:** Distributed under the [MIT License](LICENSE).
