@@ -1,0 +1,10 @@
+{
+  "port": 9999,
+  "discovery_port": 9998,
+  "filter_alpha": 0.7,
+  "deadzone": 0.005,
+  "anti_deadzone": 0.0,
+  "steering_expo": 1.35,
+  "speed_damping": 0.45,
+  "show_dashboard": true
+}

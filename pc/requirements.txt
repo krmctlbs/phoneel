@@ -1,0 +1,9 @@
+# phoneel PC Server Dependencies
+# ================================
+# Install: pip install -r requirements.txt
+#
+# ALSO REQUIRED (manual install):
+#   ViGEmBus driver: https://github.com/nefarius/ViGEmBus/releases
+#
+
+vgamepad>=0.1.0
