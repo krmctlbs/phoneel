@@ -12,11 +12,11 @@ Single-axis steering signal processor:
 class SteeringFilter:
     def __init__(
         self,
-        alpha: float = 0.70,
+        alpha: float = 0.65,
         deadzone: float = 0.005,
         anti_deadzone: float = 0.00,
-        steering_expo: float = 1.35,
-        speed_damping: float = 0.45,
+        steering_expo: float = 1.30,
+        speed_damping: float = 0.50,
     ):
         self.alpha = alpha
         self.deadzone = deadzone
@@ -38,16 +38,17 @@ class SteeringFilter:
 
         val = self._apply_anti_deadzone(val)
 
+        # Narrow center-only speed damping (|val| < 0.20) so fast corners retain 100% authority
+        speed_factor = max(0.0, min(1.0, (speed_kmh - 60.0) / 180.0))
+        center_weight = max(0.0, 1.0 - abs(val) * 5.0)
+        damping = speed_factor * center_weight * self.speed_damping * 0.45
+        steady_alpha = max(0.28, self.alpha * (1.0 - damping))
+
+        # C1-continuous counter-steer blend (zero branch jump / zero snap on Wi-Fi jitter)
         delta = abs(val - self._filtered)
-        if delta > 0.10:
-            # High angular velocity (counter-steering): bypass low-pass lag
-            effective_alpha = max(self.alpha, min(0.96, self.alpha + (delta - 0.10) * 1.8))
-        else:
-            # High-speed straight-line stability damping near center
-            speed_factor = max(0.0, min(1.0, (speed_kmh - 60.0) / 180.0))
-            center_weight = max(0.0, 1.0 - abs(val) * 1.6)
-            damping = speed_factor * center_weight * self.speed_damping * 0.45
-            effective_alpha = max(0.22, self.alpha * (1.0 - damping))
+        counter_blend = max(0.0, min(1.0, (delta - 0.04) / 0.22))
+        target_fast = max(steady_alpha, 0.92)
+        effective_alpha = steady_alpha + (target_fast - steady_alpha) * (counter_blend * counter_blend)
 
         self._filtered = effective_alpha * val + (1.0 - effective_alpha) * self._filtered
         return max(-1.0, min(1.0, self._filtered))

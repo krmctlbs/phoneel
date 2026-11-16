@@ -8,13 +8,17 @@ import android.hardware.SensorManager
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.atan2
 
 /**
  * Steering-focused sensor reader for racing games.
  *
- * Uses Rotation Vector sensor with landscape coordinate remapping.
- * Phone held flat in landscape = 0° = straight ahead.
- * Tilt left/right = steering.
+ * Uses Rotation Vector sensor with landscape coordinate remapping and
+ * tilt-invariant gravity projection so steering remains 1:1 and free of
+ * Euler gimbal lock whether held upright (60°–90° steering wheel posture)
+ * or flat.
  *
  * Runs on a dedicated background thread for direct network I/O.
  */
@@ -34,7 +38,9 @@ class SensorReader(context: Context) : SensorEventListener {
     // Pre-allocated buffers (avoid GC during hot loop)
     private val rotationMatrix = FloatArray(9)
     private val remappedMatrix = FloatArray(9)
-    private val orientation = FloatArray(3)
+
+    // Sign of in-screen vertical gravity component in upright landscape hold (+1f in standard landscape)
+    @Volatile private var dirY: Float = 1f
 
     // ─── Output ────────────────────────────────────────
     /** Current steering value: -1.0 (full left) to +1.0 (full right) */
@@ -52,8 +58,8 @@ class SensorReader(context: Context) : SensorEventListener {
     }
 
     // ─── Config ────────────────────────────────────────
-    /** Tilt angle (radians) for full steering lock. Default ~35° */
-    var maxAngle: Float = Math.toRadians(35.0).toFloat()
+    /** Tilt angle (radians) for full steering lock. Default ±80° (Sens 4) */
+    var maxAngle: Float = Math.toRadians(80.0).toFloat()
 
     /** Flip steering direction if phone orientation is reversed */
     var invertSteering: Boolean = false
@@ -110,13 +116,26 @@ class SensorReader(context: Context) : SensorEventListener {
             remappedMatrix
         )
 
-        // 3. Extract orientation angles
-        SensorManager.getOrientation(remappedMatrix, orientation)
+        // 3. Extract world-Up vector in landscape device frame:
+        //    ux = lateral axis, uy = vertical in-screen axis (+sin(θ) when upright), uz = screen normal (+cos(θ))
+        val ux = remappedMatrix[6]
+        val uy = remappedMatrix[7]
+        val uz = remappedMatrix[8]
 
-        // orientation[2] = roll = left/right tilt in landscape
-        var roll = orientation[2]
-        rawRoll = roll
-        roll -= centerOffset
+        if (abs(ux) < 0.30f && abs(uy) > 0.50f) {
+            dirY = if (uy >= 0f) 1f else -1f
+        }
+
+        // Smooth continuous blend between upright hold (uz <= 0.70, θ >= 45°) and flat desk hold (uz >= 0.85, θ <= 31°)
+        val tFlat = ((uz - 0.70f) / 0.15f).coerceIn(0f, 1f)
+        val denom = (1f - tFlat) * (dirY * uy) + tFlat * uz
+        val angle = atan2(-ux, denom)
+        rawRoll = angle
+
+        var roll = angle - centerOffset
+        val pi = PI.toFloat()
+        if (roll > pi) roll -= 2f * pi
+        else if (roll < -pi) roll += 2f * pi
 
         if (invertSteering) roll = -roll
 

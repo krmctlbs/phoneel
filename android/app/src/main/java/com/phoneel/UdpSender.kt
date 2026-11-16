@@ -133,6 +133,7 @@ class UdpSender {
                     soTimeout = 1500
                     sendBufferSize = 65536
                     receiveBufferSize = 65536
+                    try { trafficClass = 0x10 } catch (_: Exception) {} // IPTOS_LOWDELAY for WMM Wi-Fi priority
                 }
             } else {
                 val sock = Socket()
@@ -200,8 +201,8 @@ class UdpSender {
                     }
 
                     if (!didWork) {
-                        // Ultra-short 1ms poll when idle (zero LockSupport hazard, <1ms latency)
-                        Thread.sleep(1)
+                        // Park until unparked by sendDriveState/sendButton (avoids Thread.sleep(1) 16ms timer slack!)
+                        LockSupport.parkNanos(2_000_000L)
                     }
                 } catch (_: InterruptedException) {
                     break
@@ -335,6 +336,7 @@ class UdpSender {
         if (!isConnected.get()) return
         val ts = ((System.currentTimeMillis() - startTime) and 0xFFFFFFFFL).toInt()
         latestSensorPacket.set(Protocol.buildSensorPacket(steering, gas, brake, ts))
+        writerThread?.let { LockSupport.unpark(it) }
     }
 
     /**
@@ -343,6 +345,7 @@ class UdpSender {
     fun sendButton(pressed: Boolean, buttonId: Short) {
         if (!isConnected.get()) return
         reliableQueue.offer(Protocol.buildButtonPacket(pressed, buttonId))
+        writerThread?.let { LockSupport.unpark(it) }
     }
 
     /**
@@ -351,5 +354,6 @@ class UdpSender {
     fun sendCalibrate() {
         if (!isConnected.get()) return
         reliableQueue.offer(Protocol.buildCalibratePacket())
+        writerThread?.let { LockSupport.unpark(it) }
     }
 }

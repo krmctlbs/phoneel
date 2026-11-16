@@ -200,7 +200,7 @@ class CenterDduView(context: Context) : View(context) {
         canvas.drawRoundRect(badgeRect, 8f, 8f, badgePaint)
         badgeTextPaint.textSize = h * 0.041f
         badgeTextPaint.color = if (telemetry.acActive) Color.parseColor("#34d399") else Color.parseColor("#60a5fa")
-        canvas.drawText(if (telemetry.acActive) "● AC LIVE" else "SIM DDU", rightX, h * 0.692f, badgeTextPaint)
+        canvas.drawText(if (telemetry.acActive) "● AC LIVE" else "SYNTHETIC", rightX, h * 0.692f, badgeTextPaint)
 
         // 6. Bottom Section: Precision Steering Horizon Bar + Angle Readout
         val divY2 = h * 0.76f

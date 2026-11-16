@@ -78,8 +78,8 @@ class RacingDashboard:
     def _run(self):
         self._root = tk.Tk()
         self._root.title("Phoneel Server v0.1-beta")
-        self._root.geometry("630x600")
-        self._root.minsize(590, 560)
+        self._root.geometry("630x630")
+        self._root.minsize(590, 590)
         self._root.configure(bg='#090b10')
         self._root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -208,13 +208,15 @@ class RacingDashboard:
             command=self._reset_filter_defaults
         ).pack(side='right')
 
-        alpha_init = self.config.filter_alpha if self.config else 0.70
-        expo_init = getattr(self.config, 'steering_expo', 1.35) if self.config else 1.35
+        alpha_init = self.config.filter_alpha if self.config else 0.65
+        expo_init = getattr(self.config, 'steering_expo', 1.30) if self.config else 1.30
+        damp_init = getattr(self.config, 'speed_damping', 0.50) if self.config else 0.50
         dz_init = self.config.deadzone if self.config else 0.005
         adz_init = self.config.anti_deadzone if self.config else 0.0
 
         self._alpha_var = tk.DoubleVar(value=alpha_init)
         self._expo_var = tk.DoubleVar(value=expo_init)
+        self._damp_var = tk.DoubleVar(value=damp_init)
         self._dz_var = tk.DoubleVar(value=dz_init)
         self._adz_var = tk.DoubleVar(value=adz_init)
         self._slider_labels = {}
@@ -223,7 +225,10 @@ class RacingDashboard:
             tune_card, "EMA Filter Alpha", self._alpha_var, 0.10, 1.00, 0.05
         )
         self._build_slider_row(
-            tune_card, "Response Curve (Expo)", self._expo_var, 1.00, 1.85, 0.05
+            tune_card, "Response Curve (Expo)", self._expo_var, 1.00, 2.00, 0.05
+        )
+        self._build_slider_row(
+            tune_card, "High-Speed Damping", self._damp_var, 0.00, 1.00, 0.05
         )
         self._build_slider_row(
             tune_card, "Center Deadzone", self._dz_var, 0.000, 0.050, 0.002
@@ -266,6 +271,7 @@ class RacingDashboard:
                     round(self._dz_var.get(), 4),
                     round(self._adz_var.get(), 3),
                     round(self._expo_var.get(), 2),
+                    round(self._damp_var.get(), 2),
                 )
 
         scale = tk.Scale(
@@ -277,14 +283,15 @@ class RacingDashboard:
         scale.pack(side='right', fill='x', expand=True, padx=8)
 
     def _reset_filter_defaults(self):
-        self._alpha_var.set(0.70)
-        self._expo_var.set(1.35)
+        self._alpha_var.set(0.65)
+        self._expo_var.set(1.30)
+        self._damp_var.set(0.50)
         self._dz_var.set(0.005)
         self._adz_var.set(0.00)
         for val_lbl, var in self._slider_labels.values():
             val_lbl.config(text=f"{var.get():.3f}")
         if self.on_filter_change:
-            self.on_filter_change(0.70, 0.005, 0.00, 1.35)
+            self.on_filter_change(0.65, 0.005, 0.00, 1.30, 0.50)
 
     def _trigger_usb_refresh(self):
         if self.on_usb_refresh:

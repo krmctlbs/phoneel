@@ -97,7 +97,7 @@ class PhoneelRacingServer:
         print(f"  Port:   {self.config.port} (UDP / TCP)")
         print(
             f"  Filter: alpha={self.config.filter_alpha} expo={self.config.steering_expo} "
-            f"dz={self.config.deadzone} anti-dz={self.config.anti_deadzone}"
+            f"damp={self.config.speed_damping} dz={self.config.deadzone} anti-dz={self.config.anti_deadzone}"
         )
         print("=" * 60)
 
@@ -184,15 +184,24 @@ class PhoneelRacingServer:
             if sleep_time > 0:
                 time.sleep(sleep_time)
 
-    def _on_live_filter_change(self, alpha: float, deadzone: float, anti_deadzone: float, steering_expo: float = 1.35):
+    def _on_live_filter_change(
+        self,
+        alpha: float,
+        deadzone: float,
+        anti_deadzone: float,
+        steering_expo: float = 1.30,
+        speed_damping: float = 0.50,
+    ):
         self.filter.alpha = alpha
         self.filter.deadzone = deadzone
         self.filter.anti_deadzone = anti_deadzone
         self.filter.steering_expo = steering_expo
+        self.filter.speed_damping = speed_damping
         self.config.filter_alpha = alpha
         self.config.deadzone = deadzone
         self.config.anti_deadzone = anti_deadzone
         self.config.steering_expo = steering_expo
+        self.config.speed_damping = speed_damping
         try:
             self.config.save()
         except Exception:

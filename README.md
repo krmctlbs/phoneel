@@ -1,6 +1,6 @@
 # Phoneel `v0.1-beta`
 
-**Phoneel** is a bidirectional smartphone steering controller and vehicle telemetry display for PC racing simulations. It streams high-frequency orientation and analog pedal inputs from Android to a virtual Xbox 360 controller on Windows (`ViGEmBus`), while simultaneously reading telemetry from Assetto Corsa shared memory at 60 Hz to drive a real-time digital dash unit (DDU) and haptic feedback engine on the phone.
+**Phoneel** is a bidirectional smartphone steering controller and vehicle telemetry display built primarily for **Assetto Corsa** on PC. It streams 120–200 Hz gyroscope steering and analog pedal inputs from Android to a virtual Xbox 360 controller on Windows (`ViGEmBus`), while reading Assetto Corsa shared memory (`acpmf_physics`, `acpmf_graphics`, `acpmf_static`) at 60 Hz to drive a live digital dash unit (DDU) and tire-slip / kerb haptic feedback on the phone.
 
 | Live In-Game Telemetry DDU | Interactive HUD Layout Editor |
 | :---: | :---: |
@@ -52,7 +52,7 @@ flowchart LR
 
 ## Mathematical Formulation & Signal Processing
 
-### 1. Coordinate Remapping & Roll Extraction (`SensorReader.kt`)
+### 1. Coordinate Remapping & Tilt-Invariant Steering Extraction (`SensorReader.kt`)
 
 Phoneel uses Android's hardware-fused `TYPE_GAME_ROTATION_VECTOR` (accelerometer + gyroscope fusion without magnetometer yaw drift). Given the unit quaternion $\mathbf{q} = (x, y, z, w)$ from the sensor hub:
 
@@ -61,9 +61,13 @@ Phoneel uses Android's hardware-fused `TYPE_GAME_ROTATION_VECTOR` (accelerometer
 
 $$\mathbf{R}' = \mathrm{remapCoordinateSystem}\left(\mathbf{R}, \mathrm{AXIS\text{-}Y}, \mathrm{AXIS\text{-}MINUS\text{-}X}\right)$$
 
-3. Extract Euler angles $(\psi, \theta, \phi)$ from $\mathbf{R}'$ and normalize the roll angle $\phi$ relative to the calibrated center offset $\phi_0$ and configured lock angle $\Phi \in [40^\circ, 100^\circ]$:
+3. Extract the world-Up unit vector $\mathbf{u} = (u_x, u_y, u_z) = (R'_{20}, R'_{21}, R'_{22})$ in the landscape device frame. Standard Euler roll ($\mathrm{atan2}(-u_x, u_z)$) hits gimbal lock when the phone is held upright like a steering wheel ($\theta \in [60^\circ, 90^\circ]$, where $u_z = \cos\theta \to 0$). Phoneel projects gravity onto the in-screen vertical axis $u_y = \sin\theta\cos\alpha$ when held upright ($\sin\theta$ cancels out in $\mathrm{atan2}(-u_x, u_y)$) and blends continuously into $u_z$ only when laid flat on a desk ($u_z > 0.70$):
 
-$$u = \mathrm{clip}\left(\frac{\phi - \phi_0}{\Phi}, -1.0, 1.0\right)$$
+$$t = \mathrm{clip}\left(\frac{u_z - 0.70}{0.15}, 0, 1\right), \qquad \phi = \mathrm{atan2}\left(-u_x, \, (1 - t) s_y u_y + t u_z\right)$$
+
+4. Normalize the wrapped steering angle $\Delta\phi = \mathrm{wrap}_{[-\pi, \pi]}(\phi - \phi_0)$ relative to the calibrated center offset $\phi_0$ and configured lock angle $\Phi \in [40^\circ, 100^\circ]$ (default $\Phi = 80^\circ$ at `Sensitivity 4`):
+
+$$u = \mathrm{clip}\left(\frac{\Delta\phi}{\Phi}, -1.0, 1.0\right)$$
 
 ---
 
@@ -77,7 +81,7 @@ Suppresses resting hand tremor within $|x| < d_z$ (default $d_z = 0.005$) and re
 $$x_1 = \begin{cases} 0 & \text{if } |x| < d_z \\ \mathrm{sgn}(x)\frac{|x| - d_z}{1 - d_z} & \text{otherwise} \end{cases}$$
 
 #### Stage B: Non-Linear Exponential Response Curve
-Applies an exponential curve $\gamma \in [1.0, 2.2]$ (default $\gamma = 1.35$) to increase angular resolution near the center while preserving $100\%$ steering lock at $|x_1| = 1$:
+Applies an exponential curve $\gamma \in [1.0, 2.2]$ (default $\gamma = 1.30$) to increase angular resolution near the center while preserving $100\%$ steering lock at $|x_1| = 1$:
 
 $$x_2 = \mathrm{sgn}(x_1)|x_1|^{\gamma}$$
 
@@ -87,13 +91,13 @@ For titles with an unconfigurable internal gamepad deadzone $d_a$:
 $$x_3 = \mathrm{sgn}(x_2)\left(d_a + (1 - d_a)|x_2|\right)$$
 
 #### Stage D: Speed-Sensitive & Counter-Steer Adaptive EMA Filter
-A standard fixed-alpha Exponential Moving Average (EMA) either leaves high-speed straight-line jitter unfiltered or introduces phase lag during rapid counter-steering (catching oversteer). Phoneel computes a dynamic smoothing factor $\alpha \in [0.22, 0.96]$ per packet based on vehicle speed $v$ ($\text{km/h}$) and instantaneous steering delta $\Delta = |x_3 - y_{t-1}|$:
+A standard fixed-alpha Exponential Moving Average (EMA) either leaves high-speed straight-line jitter unfiltered or introduces phase lag during rapid counter-steering (catching oversteer). Phoneel computes a $C^1$-continuous dynamic smoothing factor $\alpha \in [0.28, 0.92]$ per packet (default base $\alpha_0 = 0.65$, speed damping $d_s = 0.50$) based on vehicle speed $v$ ($\text{km/h}$) and instantaneous steering delta $\Delta = |x_3 - y_{t-1}|$:
 
-$$\alpha = \begin{cases} \min\left(0.96, \alpha_0 + 1.8(\Delta - 0.10)\right) & \text{if } \Delta > 0.10 \quad \text{(rapid counter-steer)} \\ \max\left(0.22, \alpha_0 (1 - 0.45 k_v w_c d_s)\right) & \text{if } \Delta \le 0.10 \quad \text{(steady-state)} \end{cases}$$
+$$\alpha_{\mathrm{steady}} = \max\left(0.28, \, \alpha_0 (1 - 0.45 k_v w_c d_s)\right), \qquad \alpha = \alpha_{\mathrm{steady}} + (0.92 - \alpha_{\mathrm{steady}}) \cdot \mathrm{clip}\left(\frac{\Delta - 0.04}{0.22}, 0, 1\right)^2$$
 
 where:
 - $k_v = \mathrm{clip}\left(\frac{v - 60}{180}, 0, 1\right)$ scales damping between $60\text{ km/h}$ and $240\text{ km/h}$,
-- $w_c = \max(0, 1 - 1.6|x_3|)$ restricts damping to the center region,
+- $w_c = \max(0, 1 - 5.0|x_3|)$ restricts damping strictly to the narrow straight-line corridor ($|x_3| < 0.20$) so fast sweeping corners retain $100\%$ turn-in authority,
 - $y_t = \alpha x_3 + (1 - \alpha)y_{t-1}$ is the filtered output.
 
 ---
@@ -159,6 +163,18 @@ cd android
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
+### 3. Assetto Corsa / Content Manager Controller Settings
+Phoneel is calibrated specifically around Assetto Corsa's physics and shared memory pipeline. Because deadzone normalization ($d_z = 0.005$), exponential response ($\gamma = 1.30$), and speed-sensitive damping ($d_s = 0.50$) are already processed on the PC host, Assetto Corsa's built-in thumbstick filters must be set as follows so they do not stack or add steering lag:
+
+- **Input Method:** `Gamepad` (`Xbox 360`)
+- **Speed Sensitivity:** `10%`
+- **Steering Speed:** `100%`
+- **Steering Gamma:** `100%`
+- **Steering Filter:** `0%`
+- **Steering Deadzone:** `1%`
+- **Rumble Effects:** `0%` *(Haptics are driven directly from AC Shared Memory at 60 Hz)*
+- **Custom Shaders Patch (CSP) $\to$ Gamepad FX:** **Disabled (`Off`)** — *Gamepad FX is designed for physical thumbsticks and overrides direct steering angles with counter-steer assist scripts.*
+
 ---
 
 ## Project Structure
@@ -181,7 +197,7 @@ phoneel/
 └── android/app/src/main/java/com/phoneel/
     ├── MainActivity.kt          # Cockpit UI, Haptic FFB driver, drag-and-drop HUD editor
     ├── CockpitViews.kt          # Custom 60 FPS Canvas views (DDU, Xbox buttons, analog pedals)
-    ├── SensorReader.kt          # Game Rotation Vector quaternion-to-roll pipeline
+    ├── SensorReader.kt          # Tilt-invariant rotation matrix to steering pipeline
     ├── UdpSender.kt             # Lock-free conflated transmitter & telemetry receiver
     ├── Protocol.kt              # Binary packet builders and parsers
     └── Discovery.kt             # Subnet & global UDP broadcast scanner
@@ -189,7 +205,12 @@ phoneel/
 
 ---
 
-## Status & License
+## Changelog (`v0.1-beta` Update)
 
-- **Current Release:** `v0.1-beta`
-- **Development:** Engineered iteratively using AI-assisted workflows alongside live closed-loop telemetry and latency profiling in Assetto Corsa.
+- **Upright Steering Gimbal-Lock Fix (`SensorReader.kt`):** Replaced `SensorManager.getOrientation()` Euler roll (`atan2(-u_x, u_z)`) with in-screen gravity projection (`atan2(-u_x, u_y)`). Holding the phone upright at $60^\circ\text{–}90^\circ$ no longer causes sensitivity spikes near $u_z \to 0$, and the full `Sensitivity 1–10` ($\pm 100^\circ \dots \pm 40^\circ$) range now maps 1:1.
+- **Filter Tuning & Continuous Counter-Steer Blend (`pc/filters.py`, `pc/dashboard.py`):**
+  - Updated default filter parameters for linear AC settings (`EMA Alpha = 0.65`, `Expo = 1.30`, `High-Speed Damping = 0.50`, `Deadzone = 0.005`) and added a live `High-Speed Damping` slider to the desktop UI.
+  - Restricted high-speed damping to the narrow straight-line center ($|x| < 0.20$) so fast corners keep full turn-in response.
+  - Replaced the step threshold at $\Delta > 0.10$ with a $C^1$-continuous quadratic blend to eliminate steering snaps during Wi-Fi jitter.
+- **Wi-Fi Low-Latency Lock & Event-Driven TX (`UdpSender.kt`, `MainActivity.kt`):** Replaced `Thread.sleep(1)` polling with `LockSupport.unpark` wakeup, added Android `WIFI_MODE_FULL_LOW_LATENCY` lock, and set UDP `IPTOS_LOWDELAY` (`0x10`) traffic class to prevent 60 Hz timer-slack drops.
+- **AC Pause State & DDU Badge (`pc/ac_telemetry.py`, `CockpitViews.kt`):** Fixed `AC LIVE` $\leftrightarrow$ `SYNTHETIC` oscillation when paused in the Assetto Corsa `ESC` menu (`gfx.status == 3`) and unified the standby badge label as `SYNTHETIC`.

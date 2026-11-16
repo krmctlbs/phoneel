@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
 import android.graphics.*
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -34,6 +35,7 @@ class MainActivity : Activity() {
     private val sender = UdpSender()
     private val handler = Handler(Looper.getMainLooper())
     private var vibrator: Vibrator? = null
+    private var wifiLock: WifiManager.WifiLock? = null
 
     // ─── Live Control & Telemetry State ───────────────
     @Volatile private var gasValue = 0f
@@ -157,6 +159,19 @@ class MainActivity : Activity() {
         } catch (_: Exception) {
             null
         }
+        wifiLock = try {
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            val lockType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+            } else {
+                WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            }
+            wm?.createWifiLock(lockType, "phoneel:low_latency_wifi")?.apply {
+                setReferenceCounted(false)
+            }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     /**
@@ -192,6 +207,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        try { wifiLock?.acquire() } catch (_: Exception) {}
         sensorReader.start()
         goImmersive()
     }
@@ -199,6 +215,7 @@ class MainActivity : Activity() {
     override fun onPause() {
         super.onPause()
         sensorReader.stop()
+        try { if (wifiLock?.isHeld == true) wifiLock?.release() } catch (_: Exception) {}
     }
 
     override fun onDestroy() {
@@ -336,7 +353,6 @@ class MainActivity : Activity() {
                 if (pressed && !isEditLayoutMode) {
                     sensorReader.recenter()
                     sender.sendCalibrate()
-                    showToast("Gyro centered")
                 }
             }
         }

@@ -14,11 +14,11 @@ class PhoneelConfig:
     port: int = 9999
     discovery_port: int = 9998
 
-    filter_alpha: float = 0.70
+    filter_alpha: float = 0.65
     deadzone: float = 0.005
     anti_deadzone: float = 0.00
-    steering_expo: float = 1.35
-    speed_damping: float = 0.45
+    steering_expo: float = 1.30
+    speed_damping: float = 0.50
 
     show_dashboard: bool = True
 

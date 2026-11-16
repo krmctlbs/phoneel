@@ -191,16 +191,24 @@ class ACTelemetryReader:
                 self._phys_mmap.seek(0)
                 phys = SPageFilePhysics.from_buffer_copy(self._phys_mmap.read(ctypes.sizeof(SPageFilePhysics)))
 
-                if phys.packetId != self._last_packet_id and phys.packetId > 0:
+                if phys.packetId > 0 and (
+                    phys.packetId != self._last_packet_id
+                    or self._last_packet_id < 0
+                ):
                     self._last_packet_id = phys.packetId
                     self._last_active_time = now
 
-                if (now - self._last_active_time) < 0.6 and self._last_packet_id > 0:
-                    self._gfx_mmap.seek(0)
-                    gfx = SPageFileGraphics.from_buffer_copy(self._gfx_mmap.read(ctypes.sizeof(SPageFileGraphics)))
+                self._gfx_mmap.seek(0)
+                gfx = SPageFileGraphics.from_buffer_copy(self._gfx_mmap.read(ctypes.sizeof(SPageFileGraphics)))
 
+                # Keep session alive while paused in ESC menu (status == 3) or Replay (status == 1)
+                if gfx.status in (1, 3) and self._last_active_time > 0:
+                    self._last_active_time = now
+
+                if (now - self._last_active_time) < 0.6 and self._last_packet_id > 0:
                     # If Assetto Corsa session is OFF (0), immediately release mmaps and return to standby
                     if gfx.status == 0:
+                        self._last_packet_id = -1
                         self.close()
                     else:
                         self._stat_mmap.seek(0)
@@ -341,5 +349,4 @@ class ACTelemetryReader:
         self._phys_mmap = None
         self._gfx_mmap = None
         self._stat_mmap = None
-        self._last_packet_id = -1
         self._last_active_time = 0.0
